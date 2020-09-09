@@ -20,10 +20,6 @@
 //	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 //	SOFTWARE.
 
-// original repo is stalled currently
-// merge fixes by https://github.com/ThomasMonkman/filewatch/pull/18/commits/7336dd60339206b6e10db1b04a4cb8ca6f6d7b19
-
-
 #ifndef FILEWATCHER_H
 #define FILEWATCHER_H
 
@@ -395,8 +391,9 @@ namespace filewatch {
 						break;
 					}
 
-					// using extended information to get modification dates
-					_FILE_NOTIFY_EXTENDED_INFORMATION* file_information = reinterpret_cast<_FILE_NOTIFY_EXTENDED_INFORMATION*>(&buffer[0]);
+					// buffer, according to ms doc, will only apply to _FILE_NOTIFY_INFORMATION
+					// https://docs.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-file_notify_information
+					_FILE_NOTIFY_INFORMATION* file_information = reinterpret_cast<_FILE_NOTIFY_INFORMATION*>(&buffer[0]);
 					do
 					{
 						std::wstring changed_file_w{ file_information->FileName, file_information->FileNameLength / sizeof(file_information->FileName[0]) };
@@ -420,7 +417,7 @@ namespace filewatch {
 
 
 
-						file_information = reinterpret_cast<_FILE_NOTIFY_EXTENDED_INFORMATION*>(reinterpret_cast<BYTE*>(file_information) + file_information->NextEntryOffset);
+						file_information = reinterpret_cast<_FILE_NOTIFY_INFORMATION*>(reinterpret_cast<BYTE*>(file_information) + file_information->NextEntryOffset);
 					} while (true);
 					break;
 				}
@@ -538,7 +535,7 @@ namespace filewatch {
 					_cv.notify_all();
 				}
 			}
-		}
+	}
 #endif // __unix__
 
 		void callback_thread()
@@ -569,7 +566,7 @@ namespace filewatch {
 
 			}
 		}
-	};
+};
 
 	template<class T> constexpr typename FileWatch<T>::C FileWatch<T>::_regex_all[];
 	template<class T> constexpr typename FileWatch<T>::C FileWatch<T>::_this_directory[];
