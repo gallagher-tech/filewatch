@@ -20,6 +20,10 @@
 //	OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 //	SOFTWARE.
 
+// original repo is stalled currently
+// merge fixes by https://github.com/ThomasMonkman/filewatch/pull/18/commits/7336dd60339206b6e10db1b04a4cb8ca6f6d7b19
+
+
 #ifndef FILEWATCHER_H
 #define FILEWATCHER_H
 
