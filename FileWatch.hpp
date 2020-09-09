@@ -59,6 +59,7 @@
 #include <type_traits>
 #include <future>
 #include <regex>
+#include <iostream>
 
 namespace filewatch {
 	enum class Event {
@@ -77,11 +78,16 @@ namespace filewatch {
 	* \author Thomas Monkman
 	*
 	*/
+
+
 	template<class T>
+
 	class FileWatch
 	{
-		typedef std::basic_string<typename T::value_type, std::char_traits<typename T::value_type>> UnderpinningString;
-		typedef std::basic_regex<typename T::value_type, std::regex_traits<typename T::value_type>> UnderpinningRegex;
+		typedef typename T::value_type C;
+		typedef std::basic_string<C, std::char_traits<C>> UnderpinningString;
+		typedef std::basic_regex<C, std::regex_traits<C>> UnderpinningRegex;
+
 
 	public:
 
@@ -94,21 +100,16 @@ namespace filewatch {
 			init();
 		}
 
-#if defined _WIN32 && (defined UNICODE || defined _UNICODE)
 		FileWatch(T path, std::function<void(const T& file, const Event event_type)> callback) :
-			FileWatch<T>(path, UnderpinningRegex(L".*"), callback) {}
-#else // _WIN32 && (UNICODE || _UNICODE)
-		FileWatch(T path, std::function<void(const T& file, const Event event_type)> callback) :
-			FileWatch<T>(path, UnderpinningRegex(".*"), callback) {}
-#endif
+			FileWatch<T>(path, UnderpinningRegex(_regex_all), callback) {}
+
+		FileWatch(const FileWatch<T>& other) : FileWatch<T>(other._path, other._callback) {}
 
 		~FileWatch() {
 			destroy();
 		}
 
-		FileWatch(const FileWatch<T>& other) : FileWatch<T>(other._path, other._callback) {}
-
-		FileWatch<T>& operator=(const FileWatch<T>& other) 
+		FileWatch<T>& operator=(const FileWatch<T>& other)
 		{
 			if (this == &other) { return *this; }
 
@@ -125,6 +126,9 @@ namespace filewatch {
 		FileWatch<T>& operator=(FileWatch<T>&&) & = delete;
 
 	private:
+		static constexpr C _regex_all[] = { '.', '*', '\0' };
+		static constexpr C _this_directory[] = { '.', '/', '\0' };
+
 		struct PathParts
 		{
 			PathParts(T directory, T filename) : directory(directory), filename(filename) {}
@@ -142,6 +146,8 @@ namespace filewatch {
 		T _filename;
 
 		std::atomic<bool> _destory = { false };
+		bool _info_ready = { false };
+
 		std::function<void(const T& file, const Event event_type)> _callback;
 
 		std::thread _watch_thread;
@@ -150,12 +156,13 @@ namespace filewatch {
 		std::mutex _callback_mutex;
 		std::vector<std::pair<T, Event>> _callback_information;
 		std::thread _callback_thread;
-
+		//int _last_modified_time;
 		std::promise<void> _running;
 #ifdef _WIN32
 		HANDLE _directory = { nullptr };
 		HANDLE _close_event = { nullptr };
 
+		// limit the changes that we are monitoring
 		const DWORD _listen_filters =
 			FILE_NOTIFY_CHANGE_SECURITY |
 			FILE_NOTIFY_CHANGE_CREATION |
@@ -188,7 +195,7 @@ namespace filewatch {
 		const static std::size_t event_size = (sizeof(struct inotify_event));
 #endif // __unix__
 
-		void init() 
+		void init()
 		{
 #ifdef _WIN32
 			_close_event = CreateEvent(NULL, TRUE, FALSE, NULL);
@@ -199,23 +206,25 @@ namespace filewatch {
 			_callback_thread = std::move(std::thread([this]() {
 				try {
 					callback_thread();
-				} catch (...) {
+				}
+				catch (...) {
 					try {
 						_running.set_exception(std::current_exception());
 					}
 					catch (...) {} // set_exception() may throw too
 				}
-			}));
-			_watch_thread = std::move(std::thread([this]() { 
+				}));
+			_watch_thread = std::move(std::thread([this]() {
 				try {
 					monitor_directory();
-				} catch (...) {
+				}
+				catch (...) {
 					try {
 						_running.set_exception(std::current_exception());
 					}
 					catch (...) {} // set_exception() may throw too
 				}
-			}));
+				}));
 
 			std::future<void> future = _running.get_future();
 			future.get(); //block until the monitor_directory is up and running
@@ -240,34 +249,29 @@ namespace filewatch {
 #endif // __unix__
 		}
 
-		const PathParts split_directory_and_file(const T& path) const 
+		const PathParts split_directory_and_file(const T& path) const
 		{
-			const auto predict = [](typename T::value_type character) {
+			const auto predict = [](C character) {
 #ifdef _WIN32
-				return character == _T('\\') || character == _T('/');
+				return character == C('\\') || character == C('/');
 #elif __unix__
-				return character == '/';
+				return character == C('/');
 #endif // __unix__
 			};
-#ifdef _WIN32
-#define _UNICODE
-			const UnderpinningString this_directory = _T("./");
-#elif __unix__
-			const UnderpinningString this_directory = "./";
-#endif // __unix__
-			
-			const auto pivot = std::find_if(path.rbegin(), path.rend(), predict).base();
-			//if the path is something like "test.txt" there will be no directoy part, however we still need one, so insert './'
+
+			UnderpinningString path_string = path;
+			const auto pivot = std::find_if(path_string.rbegin(), path_string.rend(), predict).base();
+			//if the path is something like "test.txt" there will be no directory part, however we still need one, so insert './'
 			const T directory = [&]() {
-				const auto extracted_directory = UnderpinningString(path.begin(), pivot);
-				return (extracted_directory.size() > 0) ? extracted_directory : this_directory;
-			}(); 
-			const T filename = UnderpinningString(pivot, path.end());
+				const auto extracted_directory = UnderpinningString(path_string.begin(), pivot);
+				return (extracted_directory.size() > 0) ? extracted_directory : UnderpinningString(_this_directory);
+			}();
+			const T filename = UnderpinningString(pivot, path_string.end());
 			return PathParts(directory, filename);
 		}
 
 		bool pass_filter(const UnderpinningString& file_path)
-		{ 
+		{
 			if (_watching_single_file) {
 				const UnderpinningString extracted_filename = { split_directory_and_file(file_path).filename };
 				//if we are watching a single file, only that file should trigger action
@@ -277,9 +281,23 @@ namespace filewatch {
 		}
 
 #ifdef _WIN32
-		HANDLE get_directory(const T& path) 
+		template<typename... Args> DWORD GetFileAttributesX(const char* lpFileName, Args... args) {
+			return GetFileAttributesA(lpFileName, args...);
+		}
+		template<typename... Args> DWORD GetFileAttributesX(const wchar_t* lpFileName, Args... args) {
+			return GetFileAttributesW(lpFileName, args...);
+		}
+
+		template<typename... Args> HANDLE CreateFileX(const char* lpFileName, Args... args) {
+			return CreateFileA(lpFileName, args...);
+		}
+		template<typename... Args> HANDLE CreateFileX(const wchar_t* lpFileName, Args... args) {
+			return CreateFileW(lpFileName, args...);
+		}
+
+		HANDLE get_directory(const T& path)
 		{
-			auto file_info = GetFileAttributes(path.c_str());
+			auto file_info = GetFileAttributesX(path.c_str());
 
 			if (file_info == INVALID_FILE_ATTRIBUTES)
 			{
@@ -294,20 +312,20 @@ namespace filewatch {
 					_filename = parsed_path.filename;
 					return parsed_path.directory;
 				}
-				else 
+				else
 				{
 					return path;
 				}
 			}();
 
-			HANDLE directory = ::CreateFile(
+			HANDLE directory = CreateFileX(
 				watch_path.c_str(),           // pointer to the file name
 				FILE_LIST_DIRECTORY,    // access (read/write) mode
 				FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, // share mode
-				NULL, // security descriptor
+				nullptr, // security descriptor
 				OPEN_EXISTING,         // how to create
 				FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OVERLAPPED, // file attributes
-				NULL);                 // file with attributes to copy
+				HANDLE(0));                 // file with attributes to copy
 
 			if (directory == INVALID_HANDLE_VALUE)
 			{
@@ -315,11 +333,25 @@ namespace filewatch {
 			}
 			return directory;
 		}
-		void monitor_directory() 
+
+		void convert_wstring(const std::wstring& wstr, std::string& out)
+		{
+			int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
+			out.resize(size_needed, '\0');
+			WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &out[0], size_needed, NULL, NULL);
+		}
+
+		void convert_wstring(const std::wstring& wstr, std::wstring& out)
+		{
+			out = wstr;
+		}
+
+		void monitor_directory()
 		{
 			std::vector<BYTE> buffer(_buffer_size);
 			DWORD bytes_returned = 0;
 			OVERLAPPED overlapped_buffer{ 0 };
+
 
 			overlapped_buffer.hEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
 			if (!overlapped_buffer.hEvent) {
@@ -331,17 +363,21 @@ namespace filewatch {
 			auto async_pending = false;
 			_running.set_value();
 			do {
+
 				std::vector<std::pair<T, Event>> parsed_information;
+
+				// make sure we are handling the calls correctly,
+				// the event could be notified twice since different programs handles it differently
+				// https://stackoverflow.com/questions/14036449/c-winapi-readdirectorychangesw-receiving-double-notifications
 				ReadDirectoryChangesW(
 					_directory,
-					buffer.data(), buffer.size(),
+					buffer.data(), static_cast<DWORD>(buffer.size()),
 					TRUE,
 					_listen_filters,
 					&bytes_returned,
 					&overlapped_buffer, NULL);
-			
+
 				async_pending = true;
-			
 				switch (WaitForMultipleObjects(2, handles.data(), FALSE, INFINITE))
 				{
 				case WAIT_OBJECT_0:
@@ -355,20 +391,32 @@ namespace filewatch {
 						break;
 					}
 
-					FILE_NOTIFY_INFORMATION *file_information = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(&buffer[0]);
+					// using extended information to get modification dates
+					_FILE_NOTIFY_EXTENDED_INFORMATION* file_information = reinterpret_cast<_FILE_NOTIFY_EXTENDED_INFORMATION*>(&buffer[0]);
 					do
 					{
-						UnderpinningString changed_file{ file_information->FileName, file_information->FileNameLength / 2 };
+						std::wstring changed_file_w{ file_information->FileName, file_information->FileNameLength / sizeof(file_information->FileName[0]) };
+						UnderpinningString changed_file;
+						convert_wstring(changed_file_w, changed_file);
 						if (pass_filter(changed_file))
 						{
 							parsed_information.emplace_back(T{ changed_file }, _event_type_mapping.at(file_information->Action));
 						}
 
+						// attemp to fix the duplicating issue, but this is a windows thing
+						// https://stackoverflow.com/questions/1764809/filesystemwatcher-changed-event-is-raised-twice
+						//if (file_information->LastModificationTime.QuadPart != _last_modified_time) {
+						//	ofLogNotice() << "unique change";
+						//}
+						//_last_modified_time = file_information->LastModificationTime.QuadPart;
+
 						if (file_information->NextEntryOffset == 0) {
 							break;
 						}
 
-						file_information = reinterpret_cast<FILE_NOTIFY_INFORMATION*>(reinterpret_cast<BYTE*>(file_information) + file_information->NextEntryOffset);
+
+
+						file_information = reinterpret_cast<_FILE_NOTIFY_EXTENDED_INFORMATION*>(reinterpret_cast<BYTE*>(file_information) + file_information->NextEntryOffset);
 					} while (true);
 					break;
 				}
@@ -378,10 +426,12 @@ namespace filewatch {
 				case WAIT_FAILED:
 					break;
 				}
+
 				//dispatch callbacks
 				{
 					std::lock_guard<std::mutex> lock(_callback_mutex);
 					_callback_information.insert(_callback_information.end(), parsed_information.begin(), parsed_information.end());
+					_info_ready = true;
 				}
 				_cv.notify_all();
 			} while (_destory == false);
@@ -392,6 +442,7 @@ namespace filewatch {
 				CancelIo(_directory);
 				GetOverlappedResult(_directory, &overlapped_buffer, &bytes_returned, TRUE);
 			}
+
 		}
 #endif // WIN32
 
@@ -407,10 +458,10 @@ namespace filewatch {
 			return S_ISREG(statbuf.st_mode);
 		}
 
-		FolderInfo get_directory(const T& path) 
+		FolderInfo get_directory(const T& path)
 		{
 			const auto folder = inotify_init();
-			if (folder < 0) 
+			if (folder < 0)
 			{
 				throw std::system_error(errno, std::system_category());
 			}
@@ -432,42 +483,42 @@ namespace filewatch {
 			}();
 
 			const auto watch = inotify_add_watch(folder, watch_path.c_str(), IN_MODIFY | IN_CREATE | IN_DELETE);
-			if (watch < 0) 
+			if (watch < 0)
 			{
 				throw std::system_error(errno, std::system_category());
 			}
 			return { folder, watch };
 		}
 
-		void monitor_directory() 
+		void monitor_directory()
 		{
 			std::vector<char> buffer(_buffer_size);
 
 			_running.set_value();
-			while (_destory == false) 
+			while (_destory == false)
 			{
 				const auto length = read(_directory.folder, static_cast<void*>(buffer.data()), buffer.size());
-				if (length > 0) 
+				if (length > 0)
 				{
 					int i = 0;
 					std::vector<std::pair<T, Event>> parsed_information;
-					while (i < length) 
+					while (i < length)
 					{
-						struct inotify_event *event = reinterpret_cast<struct inotify_event *>(&buffer[i]); // NOLINT
-						if (event->len) 
+						struct inotify_event* event = reinterpret_cast<struct inotify_event*>(&buffer[i]); // NOLINT
+						if (event->len)
 						{
 							const UnderpinningString changed_file{ event->name };
 							if (pass_filter(changed_file))
 							{
-								if (event->mask & IN_CREATE) 
+								if (event->mask & IN_CREATE)
 								{
 									parsed_information.emplace_back(T{ changed_file }, Event::added);
 								}
-								else if (event->mask & IN_DELETE) 
+								else if (event->mask & IN_DELETE)
 								{
 									parsed_information.emplace_back(T{ changed_file }, Event::removed);
 								}
-								else if (event->mask & IN_MODIFY) 
+								else if (event->mask & IN_MODIFY)
 								{
 									parsed_information.emplace_back(T{ changed_file }, Event::modified);
 								}
@@ -491,10 +542,12 @@ namespace filewatch {
 			while (_destory == false) {
 				std::unique_lock<std::mutex> lock(_callback_mutex);
 				if (_callback_information.empty() && _destory == false) {
-					_cv.wait(lock, [this] { return _callback_information.size() > 0 || _destory; });
+					_cv.wait(lock, [this] { return _info_ready || _destory; });
 				}
 				decltype(_callback_information) callback_information = {};
 				std::swap(callback_information, _callback_information);
+				_info_ready = false;
+
 				lock.unlock();
 
 				for (const auto& file : callback_information) {
@@ -502,14 +555,19 @@ namespace filewatch {
 						try
 						{
 							_callback(file.first, file.second);
+
 						}
 						catch (const std::exception&)
 						{
 						}
 					}
 				}
+
 			}
 		}
 	};
+
+	template<class T> constexpr typename FileWatch<T>::C FileWatch<T>::_regex_all[];
+	template<class T> constexpr typename FileWatch<T>::C FileWatch<T>::_this_directory[];
 }
 #endif
