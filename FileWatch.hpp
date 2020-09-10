@@ -143,9 +143,9 @@ private:
 	bool _watching_single_file = { false };
 	T _filename;
 
-	std::atomic<bool> _callback_executed_on_start = { false };
-	std::atomic<bool> _destory = { false };
-	bool _info_ready           = { false };
+	std::atomic<bool> _callback_on_start = { true };
+	std::atomic<bool> _destory           = { false };
+	bool _info_ready                     = { false };
 
 	std::function<void( const T& file, const Event event_type )> _callback;
 
@@ -220,6 +220,15 @@ private:
                 } catch ( ... ) {}  // set_exception() may throw too
             }
         } ) );
+
+		// do init callback
+		if ( _callback && _callback_on_start ) {
+			try {
+				_callback( _path, Event::modified );
+
+			} catch ( const std::exception& ) {
+			}
+		}
 
 		std::future<void> future = _running.get_future();
 		future.get();  //block until the monitor_directory is up and running
@@ -516,13 +525,12 @@ private:
 		while ( _destory == false ) {
 			std::unique_lock<std::mutex> lock( _callback_mutex );
 			if ( _callback_information.empty() && _destory == false ) {
-				_cv.wait( lock, [this] { return _info_ready || _destory || !_callback_executed_on_start; } );
+				_cv.wait( lock, [this] { return _info_ready || _destory; } );
 			}
 
 			decltype( _callback_information ) callback_information = {};
 			std::swap( callback_information, _callback_information );
 			_info_ready = false;
-			_callback_executed_on_start = true;
 
 			lock.unlock();
 
